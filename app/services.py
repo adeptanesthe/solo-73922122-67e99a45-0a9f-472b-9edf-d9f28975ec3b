@@ -7,10 +7,9 @@ opened by another process.
 """
 from __future__ import annotations
 
-import threading
 from typing import Any, Sequence
 
-from . import repository as repo
+from . import plans_service, repository as repo
 from .codes import (
     GridError,
     grid_key,
@@ -21,10 +20,12 @@ from .codes import (
     validate_for_scan,
 )
 from .db import connect as repo_connect, immediate_tx
+from .locking import OPERATION_LOCK  # re-exported for backwards compatibility
 
 #: Serializes registrations/scans within this process (FastAPI sync
-#: endpoints run in a thread pool).
-OPERATION_LOCK = threading.RLock()
+#: endpoints run in a thread pool).  Alias kept so ``services.OPERATION_LOCK``
+#: and :data:`app.locking.OPERATION_LOCK` are the very same lock.
+__all__ = ["OPERATION_LOCK", "ConflictError"]
 
 
 class ConflictError(Exception):
@@ -175,6 +176,13 @@ def register_box(raw_grid: Any, box_number: str | None = None) -> dict[str, Any]
                 if not box_number:
                     box_number = repo.next_box_number(conn)
                 repo.insert_box(conn, box_number, tag)
+
+                # Same transaction: if this legal new tag makes the active
+                # fixture hole-plan ambiguous, withdraw that plan atomically.
+                fixture_review = plans_service.review_active_plan_in_tx(
+                    conn, trigger_box_number=box_number
+                )
+
                 row = repo.get_box(conn, box_number)
                 assert row is not None
                 box_data = box_to_dict(row)
@@ -186,6 +194,10 @@ def register_box(raw_grid: Any, box_number: str | None = None) -> dict[str, Any]
                     "grid_key": box_data["grid_key"],
                     "grid": box_data["grid"],
                     "index_audit": index_audit,
+                    "fixture_plan": fixture_review,
+                    "active_fixture_plan_withdrawn": bool(
+                        fixture_review and fixture_review.get("withdrawn")
+                    ),
                 }
         finally:
             conn.close()

@@ -52,6 +52,40 @@ CREATE TABLE IF NOT EXISTS reading_chunks (
 
 CREATE INDEX IF NOT EXISTS idx_reading_chunks_reading
     ON reading_chunks(reading_id);
+
+-- Hole-opening plans for the single scan fixture and their lifecycle.
+-- status: infeasible | proposed | active | superseded | withdrawn | adopt_failed
+CREATE TABLE IF NOT EXISTS fixture_plans (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    plan_no       TEXT NOT NULL UNIQUE,
+    status        TEXT NOT NULL,
+    feasible      INTEGER NOT NULL DEFAULT 1,
+    mode          TEXT NOT NULL DEFAULT 'errors_0_1',
+    blocked_json  TEXT NOT NULL,
+    openable_json TEXT NOT NULL,
+    holes_json    TEXT NOT NULL,
+    remaining_json TEXT NOT NULL,
+    min_holes     INTEGER,
+    reason        TEXT,
+    report_json   TEXT NOT NULL,
+    request_json  TEXT,
+    created_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    adopted_at    TEXT,
+    withdrawn_at  TEXT,
+    withdraw_reason TEXT,
+    withdraw_json TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_fixture_plans_status ON fixture_plans(status);
+
+-- Singleton row (id must be 1) pointing at the currently active plan.
+CREATE TABLE IF NOT EXISTS fixture_state (
+    id              INTEGER PRIMARY KEY CHECK (id = 1),
+    active_plan_no  TEXT REFERENCES fixture_plans(plan_no),
+    updated_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+
+INSERT OR IGNORE INTO fixture_state (id, active_plan_no) VALUES (1, NULL);
 """
 
 

@@ -15,7 +15,17 @@ from fastapi.staticfiles import StaticFiles
 from . import __version__, demo, services
 from .codes import GridError
 from .db import init_db
-from .schemas import BOX_EXAMPLES, SCAN_EXAMPLES, BoxCreate, ScanCreate
+from .fixture import SurveyError
+from .fixture_api import router as fixture_router
+from .plans_service import PlanConflictError
+from .schemas import (
+    BOX_EXAMPLES,
+    FIXTURE_ADOPT_EXAMPLES,
+    FIXTURE_SURVEY_EXAMPLES,
+    SCAN_EXAMPLES,
+    BoxCreate,
+    ScanCreate,
+)
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
@@ -25,6 +35,12 @@ async def lifespan(app: FastAPI):
     init_db()
     if os.environ.get("SEED_DEMO", "").strip() in {"1", "true", "TRUE", "yes"}:
         demo.seed_demo()
+        try:
+            from . import fixture_demo
+
+            fixture_demo.seed_fixture_demo()
+        except Exception as exc:  # never fail boot because of optional demo data
+            print(f"[fixture-demo] seeding skipped: {exc!r}")
     yield
 
 
@@ -34,9 +50,14 @@ app = FastAPI(
         "5×5 黑白点阵牌册 + 确认读数。四个旋转朝向中任一朝向在可见格上至多错 1 格即命中；"
         "扫码返回候选箱号，唯一命中才确认读数并编号，重扫同一格阵沿用编号。"
         "新牌若与旧箱完整码互命中、或被任一已确认读数命中，则 409 拒绝挂牌。\n\n"
+        "**开孔方案（单台夹具）**：`POST /api/fixture/plans/evaluate` 提交最多 12 个挡格与可开位，"
+        "返回开孔数最少的方案（开孔后至多 4 格遮挡，任一箱牌四朝向、可见格错 0/1 都唯一命中）；"
+        "`.../adopt` 按当前牌册复核后生效；合法新牌若令其歧义，会在挂牌事务内一并撤下方案，"
+        "`GET /api/fixture/plan` 列出冲突箱号。\n\n"
         "**演示**：先调用 `POST /api/demo/seed`，再在下方 `POST /api/boxes` 选择 "
         "`demo_blocked_by_occluded_reading` 示例并 Execute，即可看到一条四角遮挡的"
-        "已确认读数拦下新牌并返回冲突箱号与读数编号。"
+        "已确认读数拦下新牌并返回冲突箱号与读数编号。开孔撤下演示见 "
+        "`POST /api/demo/fixture-seed` 与 README/首页步骤。"
     ),
     version=__version__,
     lifespan=lifespan,
@@ -51,6 +72,7 @@ app.add_middleware(
 )
 
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+app.include_router(fixture_router)
 
 
 @app.get("/favicon.ico", include_in_schema=False)
@@ -75,6 +97,23 @@ def _custom_openapi() -> dict:
         scan_mt["examples"] = SCAN_EXAMPLES
     except (KeyError, TypeError):
         pass
+
+    def _set_examples(path: str, examples: dict, method: str = "post") -> None:
+        try:
+            mt = schema["paths"][path][method]["requestBody"]["content"]["application/json"]
+            mt["examples"] = examples
+        except (KeyError, TypeError):
+            pass
+
+    for path in (
+        "/api/fixture/plans/evaluate",
+        "/api/fixture/plans",
+        "/api/fixture/plan",
+    ):
+        _set_examples(path, FIXTURE_SURVEY_EXAMPLES)
+    for path in ("/api/fixture/plans/adopt", "/api/fixture/plan/adopt"):
+        _set_examples(path, FIXTURE_ADOPT_EXAMPLES)
+
     app.openapi_schema = schema
     return schema
 
@@ -99,6 +138,16 @@ async def grid_error_handler(request: Request, exc: GridError) -> JSONResponse:
 
 @app.exception_handler(services.ConflictError)
 async def conflict_handler(request: Request, exc: services.ConflictError) -> JSONResponse:
+    return JSONResponse(status_code=409, content=exc.payload)
+
+
+@app.exception_handler(SurveyError)
+async def survey_error_handler(request: Request, exc: SurveyError) -> JSONResponse:
+    return JSONResponse(status_code=422, content={"error": "invalid_survey", "message": str(exc)})
+
+
+@app.exception_handler(PlanConflictError)
+async def plan_conflict_handler(request: Request, exc: PlanConflictError) -> JSONResponse:
     return JSONResponse(status_code=409, content=exc.payload)
 
 
@@ -129,6 +178,16 @@ a.btn{display:inline-block;background:#2563eb;color:#fff;padding:.6rem 1.1rem;bo
 <p>主要接口：<code>POST /api/boxes</code> · <code>POST /api/scans</code> ·
 <code>GET /api/boxes</code> · <code>GET /api/readings</code> ·
 <code>GET /api/demo/scenario</code></p>
+<h2>开孔方案：采用后因新牌撤下</h2>
+<ol>
+<li><code>POST /api/demo/fixture-seed</code> 准备 <code>FIX-A/FIX-C/FIX-D</code> 与提案 <code>PLAN-FIX-01</code>（Compose 已自动执行）。</li>
+<li><code>POST /api/fixture/plans/PLAN-FIX-01/adopt</code> → 200，方案生效（最少开 4 孔：11/12/13/17）。</li>
+<li>在 <code>POST /api/boxes</code> 选 <b>fixture_break_withdraws_plan</b> 示例 Execute → <b>201</b>，但 <code>fixture_plan.withdrawn=true</code>：挂牌与撤下同一事务生效。</li>
+<li><code>GET /api/fixture/plan</code> → <code>active=false</code>、<code>status=withdrawn</code>、<code>conflicting_box_numbers=["FIX-A","FIX-BREAK"]</code>。</li>
+<li>无解勘测示例：<code>POST /api/fixture/plans/evaluate</code> 的 <b>fixture_ambiguous_witness</b>（给共命中格阵+箱号）与 <b>fixture_occlusion_exceeded</b>（遮挡超限）。重播：<code>POST /api/demo/fixture-reset</code> 后重新 seed。</li>
+</ol>
+<p>方案接口：<code>POST /api/fixture/plans/evaluate</code> · <code>POST /api/fixture/plans</code> ·
+<code>.../adopt</code> · <code>GET /api/fixture/plan</code> · <code>GET /api/fixture/plans</code></p>
 </body></html>"""
 
 
@@ -212,3 +271,59 @@ for _path in _BOX_PATHS:
 for _path in _SCAN_PATHS:
     app.add_api_route(_path, create_scan, methods=["POST"],
                       include_in_schema=False, status_code=200)
+
+
+# Fixture hole-plan path aliases for clients that guess common resource names.
+from .fixture_api import (  # noqa: E402
+    adopt_plan_body as _adopt_body,
+    create_plan as _create_plan,
+    evaluate_plan as _evaluate_plan,
+    get_current_plan as _get_current_plan,
+    list_plans as _list_plans,
+    submit_current_plan as _submit_current,
+    withdraw_current as _withdraw_current,
+)
+
+# POST aliases that return the 200 evaluation/proposal workflow.
+for _path in (
+    "/api/plan", "/api/plans/evaluate", "/api/plan/evaluate",
+    "/api/hole-plan", "/api/hole-plans/evaluate",
+    "/api/opening-plan", "/api/drill-plan", "/api/drilling-plan",
+    "/api/fixture/evaluate", "/api/fixture/hole-plan",
+    "/api/fixture/drill-plan", "/fixture/plan", "/plan",
+    "/api/jig/plan", "/api/fixture-plan", "/api/hole-opening-plan",
+    "/api/hole-plans", "/api/drill-plans", "/api/opening-plans",
+    "/api/fixture/hole-plans", "/api/fixture/drill-plans",
+):
+    app.add_api_route(_path, _submit_current, methods=["POST"],
+                      include_in_schema=False)
+
+# Pure read-only computation aliases (no proposal persisted).
+for _path in ("/api/fixture/survey", "/api/survey", "/api/fixture/solve",
+              "/api/fixture/minimum-plan", "/api/holes/plan"):
+    app.add_api_route(_path, _evaluate_plan, methods=["POST"],
+                      include_in_schema=False)
+
+# GET current-state aliases.
+for _path in (
+    "/api/plan", "/api/hole-plan", "/api/drill-plan",
+    "/api/opening-plan", "/fixture/plan", "/plan", "/api/jig/plan",
+    "/api/fixture", "/api/fixture/current",
+):
+    app.add_api_route(_path, _get_current_plan, methods=["GET"],
+                      include_in_schema=False)
+
+# REST-style collection aliases (201/409 on POST).
+app.add_api_route("/api/plans", _create_plan, methods=["POST"],
+                  include_in_schema=False)
+app.add_api_route("/api/plans", _list_plans, methods=["GET"],
+                  include_in_schema=False)
+
+# Adopt / withdraw action aliases.
+for _path in ("/api/plan/adopt", "/api/adopt", "/api/hole-plan/adopt",
+              "/api/fixture/adopt"):
+    app.add_api_route(_path, _adopt_body, methods=["POST"],
+                      include_in_schema=False)
+for _path in ("/api/plan/withdraw", "/api/withdraw", "/api/fixture/withdraw"):
+    app.add_api_route(_path, _withdraw_current, methods=["POST"],
+                      include_in_schema=False)

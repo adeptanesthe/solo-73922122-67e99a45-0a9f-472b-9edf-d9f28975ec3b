@@ -32,7 +32,9 @@ def clean_tables():
         conn.execute("DELETE FROM reading_chunks")
         conn.execute("DELETE FROM readings")
         conn.execute("DELETE FROM boxes")
-        conn.execute("DELETE FROM sqlite_sequence WHERE name IN ('readings')")
+        conn.execute("UPDATE fixture_state SET active_plan_no = NULL WHERE id = 1")
+        conn.execute("DELETE FROM fixture_plans")
+        conn.execute("DELETE FROM sqlite_sequence WHERE name IN ('readings','fixture_plans')")
         conn.execute("COMMIT")
     finally:
         conn.close()

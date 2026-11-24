@@ -12,6 +12,7 @@ from .codes import (
     validate_for_scan,
 )
 from .demo import DEMO_BLOCKER, DEMO_SCAN, DEMO_TAG, DEMO_VALID_NEW
+from .fixture_demo import BREAK_BOX_NUMBER, FIX_BREAK
 
 Grid = list[list[Optional[int]]]
 
@@ -90,6 +91,15 @@ BOX_EXAMPLES: dict[str, dict[str, Any]] = {
         "summary": "登记演示旧箱 BOX-DEMO-01",
         "value": {"box_number": "BOX-DEMO-01", "grid": DEMO_TAG},
     },
+    "fixture_break_withdraws_plan": {
+        "summary": "开孔演示：合法新牌 FIX-BREAK，会令生效方案歧义并触发撤下（预期 201 + withdrawn）",
+        "description": (
+            "需先 POST /api/demo/fixture-seed 并 adopt PLAN-FIX-01。"
+            "该牌与 FIX-A 完整码仅差 2 格（正常挂牌合法），但两格 6/8 正在生效方案的遮挡掩码内，"
+            "于是方案在同一事务被撤下，响应 fixture_plan.conflicting_box_numbers 给出冲突箱号。"
+        ),
+        "value": {"box_number": BREAK_BOX_NUMBER, "grid": FIX_BREAK},
+    },
 }
 
 SCAN_EXAMPLES: dict[str, dict[str, Any]] = {
@@ -113,5 +123,40 @@ SCAN_EXAMPLES: dict[str, dict[str, Any]] = {
                 [None, None, None, 1, 1],
             ],
         },
+    },
+}
+
+
+# Examples for the fixture hole-plan endpoints.
+FIXTURE_SURVEY_EXAMPLES: dict[str, dict[str, Any]] = {
+    "fixture_survey_minimum": {
+        "summary": "开孔演示勘测：8 格被挡、6 格可开，最少开 4 孔（PLAN-FIX-01）",
+        "description": "位置为行主序 0..24；也接受 [row,col]、'r,c'、cells 描述或 5×5 掩码。",
+        "value": {"blocked": [1, 6, 7, 8, 11, 12, 13, 17],
+                  "openable": [1, 7, 11, 12, 13, 17]},
+    },
+    "fixture_ambiguous_witness": {
+        "summary": "无解·双箱共命中格阵：全打开仍遮住 FIX-C/FIX-D 的两处差异（预期 feasible=false）",
+        "value": {"blocked": [0, 4, 24, 5, 9, 15], "openable": [24, 5, 9, 15]},
+    },
+    "fixture_occlusion_exceeded": {
+        "summary": "无解·遮挡超限：5 个不可开孔位 > 4（预期 reason=occlusion_exceeded）",
+        "value": {"blocked": [0, 1, 2, 3, 4, 5], "openable": [5]},
+    },
+    "fixture_cells_descriptor": {
+        "summary": "cells 描述形式：逐项标 blocked/openable",
+        "value": {"cells": [
+            {"position": 6, "blocked": True},
+            {"position": 8, "blocked": True},
+            {"position": 11, "blocked": True, "openable": True},
+            {"row": 2, "col": 2, "blocked": True, "openable": True},
+        ]},
+    },
+}
+
+FIXTURE_ADOPT_EXAMPLES: dict[str, dict[str, Any]] = {
+    "adopt_demo_plan": {
+        "summary": "采用 compose/seed 预建的 PLAN-FIX-01（按当前牌册复核）",
+        "value": {"plan_id": "PLAN-FIX-01"},
     },
 }
